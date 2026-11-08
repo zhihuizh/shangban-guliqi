@@ -7,6 +7,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23C4553B'/%3E%3Crect x='22' y='45' width='56' height='10' rx='5' fill='%23FAF8F2'/%3E%3C/svg%3E">
 <title>上班鼓励器</title>
 <style>
 :root{
@@ -43,6 +46,7 @@ body::before{
   max-width:480px;margin:0 auto;
   padding:0 22px calc(84px + env(safe-area-inset-bottom));
   min-height:100vh;
+  min-height:100dvh;
 }
 .view{display:none;animation:fade .28s ease}
 .view.active{display:block}
@@ -315,6 +319,7 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
   #view-home.active{
     display:flex;flex-direction:column;justify-content:center;
     min-height:calc(100vh - 170px);
+    min-height:calc(100dvh - 170px);
   }
   .cell-hero{padding-top:0}
   .hero-time{font-size:clamp(88px,10.5vw,136px)}
@@ -468,7 +473,79 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
 .boss-table th{font-weight:600;color:#4A4A4A}
 .boss-table td:not(:first-child),.boss-table th:not(:first-child){text-align:right}
 .boss-note{margin-top:22px;color:#8A8A8A;font-size:12px}
+
+/* ================= 下班庆祝 ================= */
+#celebrate{
+  position:fixed;inset:0;z-index:400;overflow:hidden;
+  display:none;align-items:center;justify-content:center;
+  pointer-events:none;
+}
+#celebrate.on{display:flex}
+.celebrate-inner{
+  position:relative;z-index:2;text-align:center;
+  animation:cbPop .7s cubic-bezier(.18,1.5,.4,1) both;
+}
+.celebrate-word{
+  font-size:clamp(36px,11vw,68px);font-weight:200;
+  letter-spacing:.12em;color:var(--accent);
+}
+.celebrate-sub{
+  margin-top:14px;font-size:13px;letter-spacing:.12em;color:var(--ink-3);
+}
+.celebrate-ring{
+  position:absolute;left:50%;top:50%;
+  width:120px;height:120px;margin:-60px 0 0 -60px;
+  border:2px solid var(--accent);border-radius:50%;
+  animation:cbRing 1.5s ease-out forwards;
+}
+.confetti{
+  position:absolute;top:-24px;width:7px;height:14px;border-radius:1px;
+  opacity:0;animation:cbFall 2.2s linear forwards;
+}
+@keyframes cbPop{
+  0%{opacity:0;transform:scale(.72) translateY(16px)}
+  100%{opacity:1;transform:none}
+}
+@keyframes cbRing{
+  0%{opacity:.7;transform:scale(.4)}
+  100%{opacity:0;transform:scale(4.2)}
+}
+@keyframes cbFall{
+  0%{opacity:0;transform:translateY(0) rotate(0)}
+  12%{opacity:1}
+  100%{opacity:0;transform:translateY(108vh) rotate(540deg)}
+}
 </style>
+<script>
+/* 在首屏绘制前先把外观套上，避免暗色风格闪一下白。
+   这里只读配置、写属性，配色本身由样式表里的 [data-style] 规则负责。 */
+(function () {
+  try {
+    var raw = localStorage.getItem('sbq.cfg.v1');
+    if (!raw) return;
+    var c = JSON.parse(raw) || {};
+    var root = document.documentElement;
+    if (c.style) root.setAttribute('data-style', c.style);
+    if (c.size) root.setAttribute('data-size', c.size);
+    if (c.accent) {
+      var h = String(c.accent).replace('#', '');
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      if (/^[0-9a-fA-F]{6}$/.test(h)) {
+        var n = parseInt(h, 16);
+        root.style.setProperty('--accent', '#' + h);
+        root.style.setProperty('--accent-soft',
+          'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',0.14)');
+      }
+    }
+    var BG = { paper: '#FAF8F2', neon: '#0B0B10', candy: '#FDF4FB', editorial: '#FFFFFF' };
+    var bg = BG[c.style];
+    if (bg) {
+      var m = document.querySelector('meta[name="theme-color"]');
+      if (m) m.setAttribute('content', bg);
+    }
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
 <div class="app">
@@ -755,6 +832,14 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
 </nav>
 
 <div class="toast" id="toast"></div>
+
+<div id="celebrate">
+  <div class="celebrate-ring"></div>
+  <div class="celebrate-inner">
+    <div class="celebrate-word">下班了</div>
+    <div class="celebrate-sub" id="celebrate-sub"></div>
+  </div>
+</div>
 
 <script>
 (function () {
@@ -2114,7 +2199,69 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
   }
 
   /* ==================================================================
-     14. 启动
+     14. 下班庆祝
+     ================================================================== */
+  var CELEBRATED_KEY = 'sbq.celebrated.v1';
+  var celebratedDay = '';
+  try { celebratedDay = localStorage.getItem(CELEBRATED_KEY) || ''; } catch (e) {}
+  var celebrateTimer = null;
+
+  function endTimeToday(now) {
+    var segs = workSegments();
+    if (!segs.length) return null;
+    var endMin = segs[segs.length - 1][1];
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(),
+      Math.floor(endMin / 60), endMin % 60, 0);
+  }
+
+  function celebrate(earned) {
+    var box = document.getElementById('celebrate');
+    if (!box) return;
+
+    var sub = document.getElementById('celebrate-sub');
+    if (sub) sub.textContent = '今日已赚 ' + money(earned);
+
+    var old = box.querySelectorAll('.confetti');
+    for (var i = 0; i < old.length; i++) {
+      if (old[i].parentNode) old[i].parentNode.removeChild(old[i]);
+    }
+
+    var accent = cfg.accent || styleById(cfg.style).card.accent;
+    var palette = [accent, accent, '#E4A24C', '#8B7BFF', '#45E0FF', '#E0559A'];
+
+    for (var n = 0; n < 28; n++) {
+      var p = document.createElement('span');
+      p.className = 'confetti';
+      p.style.left = (Math.random() * 100).toFixed(2) + '%';
+      p.style.background = palette[n % palette.length];
+      p.style.animationDuration = (1.8 + Math.random() * 1.3).toFixed(2) + 's';
+      p.style.animationDelay = (Math.random() * 0.9).toFixed(2) + 's';
+      box.appendChild(p);
+    }
+
+    box.classList.add('on');
+    clearTimeout(celebrateTimer);
+    celebrateTimer = setTimeout(function () {
+      box.classList.remove('on');
+    }, 4200);
+  }
+
+  function maybeCelebrate(now) {
+    if (cfg.salary <= 0 || bossOn) return;
+    var today = dateKey(now);
+    if (celebratedDay === today) return;
+    var st = computeToday(now);
+    if (st.kind !== 'after') return;
+    var endT = endTimeToday(now);
+    if (!endT) return;
+    if (now - endT > 5 * 60 * 1000) return;  // 下班超过 5 分钟就不补放了
+    celebratedDay = today;
+    try { localStorage.setItem(CELEBRATED_KEY, today); } catch (e) {}
+    celebrate(st.earned);
+  }
+
+  /* ==================================================================
+     15. 启动
      ================================================================== */
   function tick() {
     var now = new Date();
@@ -2125,6 +2272,7 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     }
     renderHome(now);
     if (currentView === 'stats') renderStats(now);
+    maybeCelebrate(now);
   }
 
   function init() {
@@ -2170,6 +2318,14 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
 
     setInterval(tick, 200);
 
+    // 刚好在下班后几分钟打开页面，也补放一次
+    maybeCelebrate(new Date());
+
+    // 挂离线缓存（只有通过 http/https 打开才生效，直接开本地文件会跳过）
+    if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+      try { navigator.serviceWorker.register('sw.js'); } catch (e) {}
+    }
+
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden) renderAll();
     });
@@ -2204,6 +2360,7 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
       return out;
     },
     hexToRgba: hexToRgba,
+    maybeCelebrate: maybeCelebrate,
     dateKey: dateKey
   };
 })();
