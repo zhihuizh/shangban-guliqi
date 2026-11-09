@@ -474,6 +474,45 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
 .boss-table td:not(:first-child),.boss-table th:not(:first-child){text-align:right}
 .boss-note{margin-top:22px;color:#8A8A8A;font-size:12px}
 
+/* ================= 今日解锁 ================= */
+.milestones{
+  display:flex;gap:9px;justify-content:center;margin-top:18px;
+}
+.ms{
+  width:30px;height:30px;border-radius:50%;
+  border:1px solid var(--line);color:var(--ink-3);
+  display:flex;align-items:center;justify-content:center;
+  transition:background .35s ease,color .35s ease,border-color .35s ease;
+}
+.ms svg{width:16px;height:16px;display:block}
+.ms.on{border-color:transparent;background:var(--accent);color:var(--ink-inv)}
+.milestone-tip{
+  margin-top:10px;font-size:11px;color:var(--ink-3);
+  letter-spacing:.05em;min-height:15px;
+}
+.earn-value .e-dec{font-size:.56em;color:var(--ink-3);margin-left:.05em;letter-spacing:0}
+
+/* ================= 下班打卡 ================= */
+.cell-action{padding:40px 0 0;display:flex;justify-content:center}
+.clock-btn{
+  min-width:128px;height:46px;padding:0 26px;border-radius:4px;
+  background:transparent;border:1px solid var(--ink);color:var(--ink);
+  font:inherit;font-size:15px;letter-spacing:.22em;cursor:pointer;
+  transition:opacity .18s,background .2s,color .2s;
+}
+.clock-btn:active{opacity:.65}
+.clock-done{
+  display:flex;align-items:center;gap:12px;
+  font-size:13px;color:var(--ink-3);letter-spacing:.05em;
+}
+:root[data-style="neon"] .clock-btn{border-radius:2px}
+:root[data-style="neon"] .ms{border-radius:3px}
+:root[data-style="candy"] .clock-btn{
+  border:0;border-radius:16px;background:var(--accent);color:var(--ink-inv);
+}
+:root[data-style="editorial"] .clock-btn{border-radius:0}
+:root[data-style="editorial"] .ms{border-radius:0}
+
 /* ================= 下班庆祝 ================= */
 #celebrate{
   position:fixed;inset:0;z-index:400;overflow:hidden;
@@ -574,12 +613,22 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
       <div class="cell-earn">
         <div class="earn-label">今日已赚</div>
         <div class="earn-value" id="earn-today">¥0.00</div>
+        <div class="milestones" id="milestones"></div>
+        <div class="milestone-tip" id="milestone-tip"></div>
       </div>
 
       <div class="cell-foot">
         <div class="footline">
           <span id="foot-rate"></span>
           <span id="foot-payday"></span>
+        </div>
+      </div>
+
+      <div class="cell-action" id="cell-action" style="display:none">
+        <button class="clock-btn" id="btn-clockout">下班</button>
+        <div class="clock-done" id="clock-done" style="display:none">
+          <span id="clock-done-text"></span>
+          <button class="link-btn" id="btn-clockundo">撤销</button>
         </div>
       </div>
     </div>
@@ -1276,6 +1325,45 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
   }
 
   /* ==================================================================
+     4.5 手动下班打卡
+     ================================================================== */
+  var CLOCK_KEY = 'sbq.clock.v1';
+  var clockState = { day: '', out: null };
+  try {
+    var _cs = JSON.parse(localStorage.getItem(CLOCK_KEY) || 'null');
+    if (_cs && _cs.day && typeof _cs.out === 'number') {
+      clockState = { day: _cs.day, out: _cs.out };
+    }
+  } catch (e) {}
+
+  function saveClock() {
+    try { localStorage.setItem(CLOCK_KEY, JSON.stringify(clockState)); } catch (e) {}
+  }
+
+  function clockOutMin(now) {
+    if (clockState.day !== dateKey(now)) return null;
+    return (typeof clockState.out === 'number') ? clockState.out : null;
+  }
+
+  function durText(minutes) {
+    var m = Math.abs(Math.round(minutes));
+    var h = Math.floor(m / 60), mm = m % 60;
+    if (h && mm) return h + ' 小时 ' + mm + ' 分';
+    if (h) return h + ' 小时';
+    return mm + ' 分';
+  }
+
+  function clockLabel(st) {
+    var t = pad(Math.floor(st.clockOut / 60)) + ':' + pad(st.clockOut % 60);
+    var segs = st.segs;
+    var endMin = segs.length ? segs[segs.length - 1][1] : st.clockOut;
+    var diff = st.clockOut - endMin;
+    if (diff > 0) return '今天 ' + t + ' 下班 · 加班 ' + durText(diff);
+    if (diff < 0) return '今天 ' + t + ' 下班 · 提前 ' + durText(diff);
+    return '今天 ' + t + ' 准点下班';
+  }
+
+  /* ==================================================================
      5. 今日状态
      ================================================================== */
   function computeToday(now) {
@@ -1284,8 +1372,12 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     var today = startOfDay(now);
     var work = isWorkday(today);
 
+    // 手动点过「下班」的话，收入就冻结在那一刻
+    var co = clockOutMin(now);
+    var cap = (co !== null && co < nowMin) ? co : nowMin;
+
     var total = totalWorkMin(segs);
-    var elapsed = work ? elapsedMin(segs, nowMin) : 0;
+    var elapsed = work ? elapsedMin(segs, cap) : 0;
     var progress = total > 0 ? Math.min(1, elapsed / total) : 0;
 
     var st = {
@@ -1294,6 +1386,7 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
       workday: work,
       kind: 'work',
       nowMin: nowMin,
+      clockOut: co,
       holiday: holidayName(today)
     };
 
@@ -1303,6 +1396,10 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     }
     if (!work) {
       st.kind = 'off';
+      return st;
+    }
+    if (co !== null && nowMin >= co) {
+      st.kind = 'done';
       return st;
     }
     var s = segs[0][0], e = segs[segs.length - 1][1];
@@ -1331,6 +1428,64 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     return (d.getMonth() + 1) + '月' + d.getDate() + '日 周' + WEEK_CN[d.getDay()];
   }
 
+  /* ---------- 今日解锁的小目标 ---------- */
+  var MILESTONES = [
+    { name: '一杯奶茶', price: 18, svg: '<path d="M8.5 8h7l-1.2 11.2a1.6 1.6 0 0 1-1.6 1.4h-1.4a1.6 1.6 0 0 1-1.6-1.4z"/><path d="M13.4 8 15 3.4"/>' },
+    { name: '一杯咖啡', price: 35, svg: '<path d="M5.5 9h10v5.4a4.4 4.4 0 0 1-4.4 4.4H9.9a4.4 4.4 0 0 1-4.4-4.4z"/><path d="M15.5 10.6h1.5a2.3 2.3 0 0 1 0 4.6h-1.5"/>' },
+    { name: '一张电影票', price: 60, svg: '<rect x="3.6" y="7.6" width="16.8" height="8.8" rx="1.6"/><path d="M15.2 7.6v8.8" stroke-dasharray="2 2.2"/>' },
+    { name: '一顿火锅', price: 150, svg: '<path d="M4.6 11h14.8v3a5 5 0 0 1-5 5H9.6a5 5 0 0 1-5-5z"/><path d="M4.6 12.4H3.2a1.4 1.4 0 0 0 0 2.8h1.4"/><path d="M19.4 12.4h1.4a1.4 1.4 0 0 1 0 2.8h-1.4"/>' },
+    { name: '一场演唱会', price: 400, svg: '<path d="M12 3.8l2.5 5.1 5.6.8-4.05 3.95.96 5.6L12 16.6l-5.01 2.65.96-5.6L3.9 9.7l5.6-.8z"/>' }
+  ];
+
+  function buildMilestones() {
+    var box = document.getElementById('milestones');
+    if (!box) return;
+    var html = '';
+    for (var i = 0; i < MILESTONES.length; i++) {
+      html += '<span class="ms" data-i="' + i + '" title="' +
+        MILESTONES[i].name + ' ' + money(MILESTONES[i].price) + '">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+        'stroke-linecap="round" stroke-linejoin="round">' + MILESTONES[i].svg + '</svg></span>';
+    }
+    box.innerHTML = html;
+  }
+
+  function syncMilestones(earned) {
+    var box = document.getElementById('milestones');
+    if (box) {
+      var nodes = box.querySelectorAll('.ms');
+      for (var i = 0; i < nodes.length; i++) {
+        nodes[i].classList.toggle('on', earned >= MILESTONES[i].price);
+      }
+    }
+    var tip = document.getElementById('milestone-tip');
+    if (!tip) return;
+    var text = '';
+    if (earned > 0) {
+      var next = null;
+      for (var j = 0; j < MILESTONES.length; j++) {
+        if (earned < MILESTONES[j].price) { next = MILESTONES[j]; break; }
+      }
+      text = next
+        ? '下一件 ' + next.name + ' · 还差 ' + money(next.price - earned)
+        : '今天的每一件都解锁了';
+    }
+    if (tip.textContent !== text) tip.textContent = text;
+  }
+
+  // 把金额拆成「整数部分大、小数部分小」，让主要数字更稳更醒目
+  function splitEarn() {
+    var el = document.getElementById('earn-today');
+    if (!el) return;
+    var raw = el.textContent;
+    var i = raw.lastIndexOf('.');
+    if (i <= 0) return;
+    if (el.getAttribute('data-split') === raw) return;
+    el.innerHTML = '<span class="e-int">' + raw.slice(0, i) + '</span>' +
+      '<span class="e-dec">' + raw.slice(i) + '</span>';
+    el.setAttribute('data-split', raw);
+  }
+
   function renderHome(now) {
     var st = computeToday(now);
     var today = startOfDay(now);
@@ -1346,9 +1501,18 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     var rateEl = document.getElementById('foot-rate');
     var payEl = document.getElementById('foot-payday');
     var noteEl = document.getElementById('home-note');
+    var actEl = document.getElementById('cell-action');
+    var clockBtn = document.getElementById('btn-clockout');
+    var clockDoneEl = document.getElementById('clock-done');
+    var clockDoneText = document.getElementById('clock-done-text');
 
     heroTime.classList.remove('done');
     noteEl.style.display = 'none';
+    if (actEl) actEl.style.display = 'none';
+    // 非工作状态下把解锁格子清空，免得休息日还留着昨天的点亮状态
+    if (st.kind !== 'work' && st.kind !== 'lunch' && st.kind !== 'after' && st.kind !== 'done') {
+      syncMilestones(0);
+    }
 
     var configured = cfg.salary > 0;
 
@@ -1402,8 +1566,9 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     }
 
     // 工作日各状态
-    statusEl.textContent = st.kind === 'after' ? '已收工'
-      : (st.kind === 'before' ? '未开工' : (st.kind === 'lunch' ? '午休中' : '进行中'));
+    statusEl.textContent = st.kind === 'done' ? '已下班'
+      : (st.kind === 'after' ? '已收工'
+        : (st.kind === 'before' ? '未开工' : (st.kind === 'lunch' ? '午休中' : '进行中')));
 
     var sMin = st.segs[0][0];
     var eMin = st.segs[st.segs.length - 1][1];
@@ -1425,6 +1590,14 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
       earnEl.textContent = money(st.frozenEarned);
       var lunchSec = (Math.min(st.nowMin, le) - minsOf(cfg.lunchStart)) * 60;
       rateEl.textContent = '午休已白拿 ' + money(lunchSec * secondPay());
+    } else if (st.kind === 'done') {
+      heroLabel.textContent = '已下班';
+      heroTime.textContent = pad(Math.floor(st.clockOut / 60)) + ':' + pad(st.clockOut % 60);
+      heroTime.classList.add('done');
+      heroSub.textContent = '今日已赚 ' + money(st.earned) + ' · 完成 ' + Math.floor(st.progress * 100) + '%';
+      fill.style.width = (st.progress * 100).toFixed(1) + '%';
+      earnEl.textContent = money(st.earned);
+      rateEl.textContent = '每分钟 ' + money(hp / 60);
     } else if (st.kind === 'after') {
       heroLabel.textContent = '今日工时';
       heroTime.textContent = hms(st.total * 60000);
@@ -1442,6 +1615,17 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
       earnEl.textContent = money(st.earned);
       rateEl.textContent = '每分钟 ' + money(hp / 60);
     }
+
+    // 下班按钮：只在真的在公司的时候给
+    if (actEl) {
+      var showAction = (st.kind === 'work' || st.kind === 'lunch' || st.kind === 'after' || st.kind === 'done');
+      actEl.style.display = showAction ? 'flex' : 'none';
+      if (clockBtn) clockBtn.style.display = st.kind === 'done' ? 'none' : '';
+      if (clockDoneEl) clockDoneEl.style.display = st.kind === 'done' ? 'flex' : 'none';
+      if (clockDoneText && st.kind === 'done') clockDoneText.textContent = clockLabel(st);
+    }
+
+    syncMilestones(st.kind === 'lunch' ? st.frozenEarned : st.earned);
 
     if (isMakeup(today)) {
       noteEl.textContent = '今天是调休补班日，别当成休息。';
@@ -1990,6 +2174,7 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
   function renderAll() {
     var now = new Date();
     renderHome(now);
+    splitEarn();
     if (currentView === 'stats') renderStats(now);
     if (currentView === 'share') drawShare(now);
   }
@@ -2026,6 +2211,32 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     var bossView = document.getElementById('view-boss');
     if (bossView) {
       bossView.addEventListener('click', function () { toggleBoss(false); });
+    }
+  }
+
+  /* ---------- 下班打卡 ---------- */
+  function bindClock() {
+    var btn = document.getElementById('btn-clockout');
+    if (btn) {
+      btn.addEventListener('click', function () {
+        var now = new Date();
+        clockState = { day: dateKey(now), out: now.getHours() * 60 + now.getMinutes() };
+        saveClock();
+        // 手动下班也算今天庆祝过，避免到点再放一次
+        celebratedDay = clockState.day;
+        try { localStorage.setItem(CELEBRATED_KEY, celebratedDay); } catch (e) {}
+        renderAll();
+        celebrate(computeToday(now).earned);
+      });
+    }
+
+    var undo = document.getElementById('btn-clockundo');
+    if (undo) {
+      undo.addEventListener('click', function () {
+        clockState = { day: '', out: null };
+        saveClock();
+        renderAll();
+      });
     }
   }
 
@@ -2271,6 +2482,7 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
       saveFish();
     }
     renderHome(now);
+    splitEarn();
     if (currentView === 'stats') renderStats(now);
     maybeCelebrate(now);
   }
@@ -2294,8 +2506,10 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     bindOnboard();
     bindStyles();
     bindBoss();
+    bindClock();
 
     buildStyleRow();
+    buildMilestones();
     applyAppearance();
 
     var tabs = document.querySelectorAll('.tabbar button');
@@ -2361,6 +2575,12 @@ input[type="color"].accent-input::-moz-color-swatch{border:0;border-radius:50%}
     },
     hexToRgba: hexToRgba,
     maybeCelebrate: maybeCelebrate,
+    clockLabel: clockLabel,
+    setClock: function (minutes, dayKeyStr) {
+      clockState = { day: dayKeyStr || dateKey(new Date()), out: minutes };
+      return clockState;
+    },
+    clearClock: function () { clockState = { day: '', out: null }; },
     dateKey: dateKey
   };
 })();
